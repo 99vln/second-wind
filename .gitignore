@@ -25,3 +25,7 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local SQLite database (the DATABASE_URL default)
+*.db
+*.db-journal
