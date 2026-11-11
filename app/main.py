@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router as api_router
+from app.api.webhooks import router as webhooks_router
 from app.web.routes import router as web_router
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -19,4 +20,5 @@ STATIC_DIR = Path(__file__).parent / "static"
 app = FastAPI(title="Second Wind", docs_url="/api/docs", openapi_url="/api/openapi.json")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(api_router)
+app.include_router(webhooks_router)
 app.include_router(web_router)
