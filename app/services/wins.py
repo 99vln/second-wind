@@ -2,12 +2,14 @@
 
 Functions take a SQLAlchemy Session and know nothing about HTTP. The caller decides which
 commits count (for example, only GITHUB_USERNAME's) and commits the transaction; this module
-only records what it is given. Commits are counted in the order they are recorded, and nothing
-already granted is ever recomputed.
+only records what it is given. A commit counts for the local day on which it was received,
+commits are counted in the order they are recorded, and nothing already granted is ever
+recomputed.
 """
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from enum import StrEnum
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -21,6 +23,8 @@ from app.services.xp import (
     DayState,
     energy_cap_for_day,
     grant_for_commit,
+    is_second_wind_day,
+    is_too_old,
     local_day,
 )
 
@@ -31,15 +35,26 @@ KIND_COMMIT = "commit"
 LEDGER_LOCK_KEY = 0x5357_0001
 
 
+class Outcome(StrEnum):
+    NEW = "new"  # stored and granted
+    DUPLICATE = "duplicate"  # SHA already recorded: nothing stored or granted this time
+    TOO_OLD = "too_old"  # older than MAX_COMMIT_AGE_DAYS when received: nothing stored
+
+
 @dataclass(frozen=True)
 class RecordResult:
-    created: bool  # False when the SHA was already recorded: nothing was granted this time
+    outcome: Outcome
     xp: int
     reserve_deposit: int
     reserve_release: int
 
+    @property
+    def created(self) -> bool:
+        return self.outcome is Outcome.NEW
 
-_DUPLICATE = RecordResult(created=False, xp=0, reserve_deposit=0, reserve_release=0)
+
+_DUPLICATE = RecordResult(Outcome.DUPLICATE, xp=0, reserve_deposit=0, reserve_release=0)
+_TOO_OLD = RecordResult(Outcome.TOO_OLD, xp=0, reserve_deposit=0, reserve_release=0)
 
 
 @dataclass(frozen=True)
@@ -48,6 +63,7 @@ class EnergyStatus:
     energy_cap: int
     energy_spent: int
     energy_left: int
+    second_wind: bool  # the bar is bigger today because of a break (Second Wind)
 
 
 @dataclass(frozen=True)
@@ -71,16 +87,23 @@ def record_commit(
     repo: str,
     author_username: str | None,
     occurred_at: datetime,
+    received_at: datetime,
     payload: dict[str, Any],
     tz: ZoneInfo,
 ) -> RecordResult:
     """Store a commit as an Event and, if it is new, the Win (and Reserve release) it earns.
 
-    A SHA that was already recorded grants nothing and returns created=False.
+    occurred_at is the commit's own timestamp, kept on the event; received_at is when the
+    server received it, and decides the local day the commit counts for. A commit older than
+    MAX_COMMIT_AGE_DAYS when received stores nothing (Outcome.TOO_OLD); a SHA that was already
+    recorded grants nothing (Outcome.DUPLICATE).
     """
     if not sha:
         raise ValueError("sha is required")
-    day = local_day(occurred_at, tz)  # rejects naive timestamps before touching the database
+    # Both checks reject naive timestamps before touching the database.
+    if is_too_old(occurred_at, received_at):
+        return _TOO_OLD
+    day = local_day(received_at, tz)
 
     _lock_ledger(session)
     if _event_exists(session, sha):
@@ -88,14 +111,13 @@ def record_commit(
 
     # Outer savepoint: the event, win and release are stored together or not at all.
     with session.begin_nested():
-        now = datetime.now(UTC)
         event = Event(
             source=SOURCE_GITHUB,
             external_id=sha,
             repo=repo,
             author_username=author_username,
             occurred_at=occurred_at,
-            received_at=now,
+            received_at=received_at,
             payload=payload,
         )
         if not _insert_event(session, event):  # raw fact first
@@ -110,7 +132,7 @@ def record_commit(
             energy_spent=grant.energy_spent,
             reserve_deposit=grant.reserve_deposit,
             rule_version=RULE_VERSION,
-            earned_at=now,
+            earned_at=received_at,
         )
         session.add(win)
         session.flush()
@@ -118,13 +140,13 @@ def record_commit(
         if grant.reserve_release > 0:
             session.add(
                 ReserveRelease(
-                    win_id=win.id, local_day=day, xp=grant.reserve_release, created_at=now
+                    win_id=win.id, local_day=day, xp=grant.reserve_release, created_at=received_at
                 )
             )
             session.flush()
 
     return RecordResult(
-        created=True,
+        Outcome.NEW,
         xp=grant.xp,
         reserve_deposit=grant.reserve_deposit,
         reserve_release=grant.reserve_release,
@@ -136,10 +158,15 @@ def get_energy(session: Session, day: date | None, tz: ZoneInfo) -> EnergyStatus
     including Second Wind when it would apply."""
     if day is None:
         day = local_day(datetime.now(UTC), tz)
-    cap = energy_cap_for_day(day, _last_active_day_before(session, day))
+    last_active = _last_active_day_before(session, day)
+    cap = energy_cap_for_day(day, last_active)
     _, spent = _commit_wins_on(session, day)
     return EnergyStatus(
-        day=day, energy_cap=cap, energy_spent=spent, energy_left=max(0, cap - spent)
+        day=day,
+        energy_cap=cap,
+        energy_spent=spent,
+        energy_left=max(0, cap - spent),
+        second_wind=is_second_wind_day(day, last_active),
     )
 
 

@@ -213,15 +213,22 @@ def test_error_while_storing_win_is_raised_and_stores_nothing(record, session, m
 def test_empty_sha_rejected(session, tz):
     with pytest.raises(ValueError):
         record_commit(
-            session, sha="", repo="r", author_username=None, occurred_at=noon(0), payload={}, tz=tz
+            session,
+            sha="",
+            repo="r",
+            author_username=None,
+            occurred_at=noon(0),
+            received_at=noon(0),
+            payload={},
+            tz=tz,
         )
 
 
 # --- Time zones -----------------------------------------------------------------------------
 
 
-def test_utc_evening_counts_for_previous_local_day(record, session, tz):
-    record(datetime(2026, 11, 11, 1, 0, tzinfo=UTC))  # 22:00 on Nov 10 in Sao Paulo
+def test_received_utc_evening_counts_for_previous_local_day(record, session, tz):
+    record(datetime(2026, 11, 11, 1, 0, tzinfo=UTC))  # received 22:00 on Nov 10 in Sao Paulo
     assert session.scalar(select(Win.local_day)) == date(2026, 11, 10)
     record(noon(0))  # also Nov 10 locally
     assert get_energy(session, date(2026, 11, 10), tz).energy_spent == 2 * COMMIT_ENERGY_COST
@@ -230,21 +237,30 @@ def test_utc_evening_counts_for_previous_local_day(record, session, tz):
 
 def test_local_midnight_starts_a_new_energy_bar(record, session, tz):
     commit_many(record, 0, FULL_COMMITS)
-    result = record(datetime(2026, 11, 11, 3, 0, tzinfo=UTC))  # 00:00 on Nov 11 locally
+    result = record(datetime(2026, 11, 11, 3, 0, tzinfo=UTC))  # received 00:00 Nov 11 locally
     assert result.xp == COMMIT_XP
     assert session.scalars(select(Win.local_day).order_by(Win.id.desc())).first() == date(
         2026, 11, 11
     )
 
 
-def test_naive_datetime_rejected_and_nothing_stored(session, tz):
+@pytest.mark.parametrize(
+    ("occurred_at", "received_at"),
+    [
+        (datetime(2026, 11, 10, 12, 0), noon(0)),
+        (noon(0), datetime(2026, 11, 10, 12, 0)),
+    ],
+    ids=["naive_occurred_at", "naive_received_at"],
+)
+def test_naive_datetime_rejected_and_nothing_stored(session, tz, occurred_at, received_at):
     with pytest.raises(ValueError):
         record_commit(
             session,
             sha="abc",
             repo="r",
             author_username=None,
-            occurred_at=datetime(2026, 11, 10, 12, 0),
+            occurred_at=occurred_at,
+            received_at=received_at,
             payload={},
             tz=tz,
         )
@@ -271,14 +287,16 @@ def test_totals_are_zero_on_empty_database(session):
     assert reserve_balance(session) == 0
 
 
-def test_win_stores_rule_version_and_event_time_is_aware(record, session):
-    when = noon(0)
-    record(when)
+def test_win_stores_rule_version_and_event_times_are_aware(record, session):
+    committed, received = noon(-2), noon(0)
+    record(received, occurred_at=committed)
     win = session.scalar(select(Win))
     event = session.scalar(select(Event))
     assert win.rule_version == RULE_VERSION
     assert event.occurred_at.tzinfo is not None
-    assert event.occurred_at == when
+    assert (event.occurred_at, event.received_at) == (committed, received)
+    assert win.earned_at == received
+    assert win.local_day == date(2026, 11, 10)  # the received day, not the commit's
 
 
 # --- recent_wins ----------------------------------------------------------------------------

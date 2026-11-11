@@ -12,13 +12,16 @@ through the game in a few days, but real work is never wasted:
   into total XP, so hyperfocus days fund the slow days.
 - Second Wind: after SECOND_WIND_GAP_DAYS or more days without a commit, the bar is bigger.
 - Reaching level L takes LEVEL_XP_FACTOR * L**2 total XP.
+- A commit counts for the local day on which it was received, not the day of its own
+  timestamp, so an old branch pushed late cannot earn XP on past days. Commits timestamped
+  more than MAX_COMMIT_AGE_DAYS before they were received are ignored.
 
 Granted XP is stored with RULE_VERSION and never recomputed: changing a number here (and
 bumping RULE_VERSION) only affects commits recorded afterwards.
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from math import isqrt
 from zoneinfo import ZoneInfo
 
@@ -33,6 +36,8 @@ RESERVE_DAILY_RELEASE_XP = 30
 
 SECOND_WIND_GAP_DAYS = 3
 SECOND_WIND_ENERGY = 200
+
+MAX_COMMIT_AGE_DAYS = 7
 
 LEVEL_XP_FACTOR = 100
 
@@ -66,14 +71,27 @@ class LevelProgress:
     xp_to_next_level: int  # XP still needed for the next level
 
 
-def energy_cap_for_day(day: date, last_active_day: date | None) -> int:
-    """The day's Energy bar: bigger after a break (Second Wind), normal on the first day ever.
+def is_second_wind_day(day: date, last_active_day: date | None) -> bool:
+    """Whether `day` comes after a break long enough for Second Wind (never on the first day).
 
     last_active_day is the most recent day before `day` with a commit win.
     """
-    if last_active_day is not None and (day - last_active_day).days >= SECOND_WIND_GAP_DAYS:
+    return last_active_day is not None and (day - last_active_day).days >= SECOND_WIND_GAP_DAYS
+
+
+def energy_cap_for_day(day: date, last_active_day: date | None) -> int:
+    """The day's Energy bar: bigger after a break (Second Wind), normal on the first day ever."""
+    if is_second_wind_day(day, last_active_day):
         return SECOND_WIND_ENERGY
     return ENERGY_PER_DAY
+
+
+def is_too_old(occurred_at: datetime, received_at: datetime) -> bool:
+    """Whether a commit is too old to count: timestamped more than MAX_COMMIT_AGE_DAYS before
+    it was received (for example, an old repository's history pushed to a new remote)."""
+    _require_aware(occurred_at)
+    _require_aware(received_at)
+    return received_at - occurred_at > timedelta(days=MAX_COMMIT_AGE_DAYS)
 
 
 def grant_for_commit(state: DayState) -> CommitGrant:
@@ -128,6 +146,10 @@ def progress_for_xp(total_xp: int) -> LevelProgress:
 
 def local_day(ts: datetime, tz: ZoneInfo) -> date:
     """The calendar day `ts` falls on in time zone `tz`."""
+    _require_aware(ts)
+    return ts.astimezone(tz).date()
+
+
+def _require_aware(ts: datetime) -> None:
     if ts.tzinfo is None or ts.utcoffset() is None:
         raise ValueError("timestamp must be timezone-aware")
-    return ts.astimezone(tz).date()

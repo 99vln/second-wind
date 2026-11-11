@@ -1,7 +1,7 @@
 # 0002. Persistence with SQLAlchemy and Alembic, and XP as a stored ledger
 
 - Status: Accepted
-- Date: 2026-11-11
+- Date: 2026-11-11 (revised the same day: commits count for the day they are received)
 
 ## Context
 
@@ -24,7 +24,7 @@ Database tooling: SQLAlchemy 2.0 (typed models) with Alembic migrations, as plan
 
 - **SQLAlchemy 2.0 and Alembic.** Models in `app/models.py` (typed `Mapped[...]` style), engine and sessions in `app/db.py`, migrations in `alembic/`. The URL always comes from `DATABASE_URL` (`app/config.py`), never from `alembic.ini`. Postgres uses the psycopg 3 driver; plain `postgres://` URLs from Neon are rewritten to `postgresql+psycopg://`.
 - **Postgres on Neon in production, SQLite in tests and local development.** Tests use an in-memory SQLite database created per test. Timestamps go through a small `UTCDateTime` type that stores UTC and refuses naive datetimes, because SQLite would otherwise drop the time zone silently.
-- **Option B, a ledger.** Three layers, kept apart: `Event` (the raw commit, stored first, unique on source and SHA), `Win` (what the event granted: XP, Energy spent, Reserve deposit, `rule_version`, local day) and `ReserveRelease` (Reserve XP paid out). Total XP is `sum(Win.xp) + sum(ReserveRelease.xp)`; the Reserve balance is `sum(Win.reserve_deposit) - sum(ReserveRelease.xp)`. Nothing already granted is updated or recomputed. Commits are counted in the order they arrive.
+- **Option B, a ledger.** Three layers, kept apart: `Event` (the raw commit, stored first, unique on source and SHA), `Win` (what the event granted: XP, Energy spent, Reserve deposit, `rule_version`, local day) and `ReserveRelease` (Reserve XP paid out). Total XP is `sum(Win.xp) + sum(ReserveRelease.xp)`; the Reserve balance is `sum(Win.reserve_deposit) - sum(ReserveRelease.xp)`. Nothing already granted is updated or recomputed. Commits are counted in the order they arrive, and each counts for the local day on which the server received it (see the Energy rule below). `Event.occurred_at` keeps the commit's own timestamp and `Event.received_at` the time it arrived.
 - **Writes take turns.** On Postgres, recording a commit takes a transaction-scoped advisory lock, so two webhook deliveries handled at once cannot both spend the day's last Energy or both release the same Reserve XP. On SQLite, transactions start with `BEGIN IMMEDIATE` for the same effect. A repeated SHA is caught by the unique constraint, also when two requests race; any other database error is raised, never reported as a duplicate.
 - **`tzdata` as a dependency.** Local days are computed with `zoneinfo`, which needs a time zone database. Windows and some minimal Linux images have none, so the `tzdata` package is a direct dependency.
 
@@ -39,13 +39,17 @@ Energy works like stamina in games: it paces progress so a hyperfocus binge cann
 | `RESERVE_DEPOSIT_XP` | 5 | A commit made with less than 10 Energy left grants 0 XP now and puts 5 XP in the Reserve |
 | `RESERVE_DAILY_RELEASE_XP` | 30 | The first commit of each local day releases up to 30 XP from the Reserve (never more than the balance) |
 | `SECOND_WIND_GAP_DAYS` / `SECOND_WIND_ENERGY` | 3 / 200 | When the last day with a commit was 3 or more days ago, the bar is 200 (the first day ever uses 100) |
+| `MAX_COMMIT_AGE_DAYS` | 7 | A commit timestamped more than 7 days before it was received is ignored: nothing is stored or granted |
 | `LEVEL_XP_FACTOR` | 100 | Level L needs 100 * L² total XP: 0-99 is level 0, 100-399 level 1, 400-899 level 2 |
 
 Unused Energy does not roll over. The Reserve is never lost: hyperfocus days fund the slow days.
+
+**Which day a commit counts for.** A commit counts for the local day (in `APP_TIMEZONE`) on which the server received it, not the day of its own timestamp. Commit timestamps are set by the author's machine and can be anything: counting by received day stops an old branch pushed late from spending the Energy of days that are already over, and work pushed in one batch simply fills today's bar and then the Reserve. Commits more than `MAX_COMMIT_AGE_DAYS` older than their arrival are ignored, so pushing an old repository's history to a new remote does not flood the Reserve.
 
 ## Consequences
 
 - A rule change is a new `RULE_VERSION` plus new constants or code; past wins keep what they granted. If a future rule needs a one-off adjustment, it is added as new rows, never by editing old ones.
 - Totals are sums over all rows. That is fine for one user; if it gets slow, a cached total can be added later and checked against the ledger.
 - Tests run on SQLite, production on Postgres. The models stay portable (no Postgres-only types); the advisory lock is the one Postgres-only path, and SQLite uses `BEGIN IMMEDIATE` instead. The first migration was checked by hand and rendered for Postgres offline; it has not yet been run against Neon.
-- Commits arriving out of order (for example an old branch pushed late) count for the day of their own timestamp, using the state stored at the time they arrive. They are never recounted later.
+- Commits count for the day they are received, using the state stored at that moment, and are never recounted later. Work done offline over several days and pushed at once earns one day's Energy plus Reserve deposits; the Reserve pays it out on the following days, so it is paced, not lost.
+- Ignored old commits leave no event behind, a deliberate exception to "store the raw event first": storing a whole imported history would only add rows no rule uses. If they ever need to count, they can be imported later under a new rule; nothing granted has to change.
