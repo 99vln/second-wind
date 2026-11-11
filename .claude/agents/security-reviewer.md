@@ -17,7 +17,7 @@ Check for:
 - new dependencies and whether they are needed.
 
 Run `uv run ruff check --select S .` and
-`uv export --no-hashes --no-emit-project --format requirements-txt | uvx pip-audit -r /dev/stdin --disable-pip`.
+`uv export --no-emit-project --format requirements-txt | uvx pip-audit -r /dev/stdin --disable-pip`.
 
 Reply with a list: severity, file:line, problem, suggested fix.
 If there is nothing, say so in one line.

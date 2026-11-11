@@ -32,7 +32,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Audit locked dependencies
         run: |
-          uv export --locked --no-hashes --no-emit-project --format requirements-txt > requirements.txt
+          uv export --locked --no-emit-project --format requirements-txt > requirements.txt
           uvx pip-audit --requirement requirements.txt --disable-pip
 
   secrets:
