@@ -41,18 +41,26 @@ def tz() -> ZoneInfo:
 
 @pytest.fixture
 def record(session: Session, tz: ZoneInfo) -> Recorder:
-    """record(when, sha=None, payload=None) -> RecordResult, with an auto-unique SHA."""
+    """record(received_at, sha=None, payload=None, occurred_at=None) -> RecordResult.
+
+    received_at decides the local day; the commit timestamp defaults to the same moment.
+    The SHA is auto-unique unless given.
+    """
     counter = count(1)
 
     def _record(
-        when: datetime, sha: str | None = None, payload: dict[str, Any] | None = None
+        received_at: datetime,
+        sha: str | None = None,
+        payload: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
     ) -> RecordResult:
         return record_commit(
             session,
             sha=sha or f"sha{next(counter):06d}",
             repo="octo/repo",
             author_username="octo",
-            occurred_at=when,
+            occurred_at=occurred_at or received_at,
+            received_at=received_at,
             payload=payload if payload is not None else {"message": "msg"},
             tz=tz,
         )
