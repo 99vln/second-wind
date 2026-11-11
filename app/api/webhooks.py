@@ -81,8 +81,10 @@ async def _read_body(request: Request, limit: int) -> bytes | None:
     Reads in chunks and stops early, so an oversized body is never held in memory whole,
     even when it is sent without a Content-Length.
     """
-    declared = request.headers.get("content-length")
-    if declared is not None and declared.isdigit() and int(declared) > limit:
+    declared = request.headers.get("content-length", "")
+    # isdecimal() alone accepts non-ASCII digits that int() may reject; anything odd here is
+    # left to the streaming cap below.
+    if declared.isascii() and declared.isdecimal() and int(declared) > limit:
         return None
     body = bytearray()
     async for chunk in request.stream():

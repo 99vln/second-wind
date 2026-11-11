@@ -29,7 +29,7 @@ The signature is compared with `hmac.compare_digest` on the raw bytes, before an
 
 **Logging.** The `X-GitHub-Delivery` id and the counts are logged. The body, the signature and secrets never are.
 
-**`GET /api/progress`** returns XP, level, today's Energy (with Second Wind), the Reserve balance and the 10 latest wins. It is read-only and has no authentication: v0.1 has one user and nothing to change.
+**`GET /api/progress`** returns XP, level, today's Energy (with Second Wind), the Reserve balance and the 10 latest wins (repo, short SHA, and the commit subject cut to 100 characters). It is read-only and has no authentication: v0.1 has one user and nothing to change.
 
 ## Consequences
 

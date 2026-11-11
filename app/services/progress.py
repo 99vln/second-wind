@@ -14,6 +14,7 @@ from app.services.xp import progress_for_xp
 
 RECENT_WINS_LIMIT = 10
 SHORT_SHA_LENGTH = 7
+MESSAGE_MAX_LENGTH = 100  # a commit subject, not a commit body
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,7 @@ class WinSummary:
     reserve_deposit: int
     repo: str
     sha: str  # short form
-    message: str  # first line of the commit message
+    message: str  # first line of the commit message, at most MESSAGE_MAX_LENGTH characters
     earned_at: datetime
 
 
@@ -81,4 +82,7 @@ def get_progress(session: Session, tz: ZoneInfo, today: date | None = None) -> P
 
 def _first_line(message: str | None) -> str:
     lines = (message or "").strip().splitlines()
-    return lines[0].strip() if lines else ""
+    first = lines[0].strip() if lines else ""
+    if len(first) > MESSAGE_MAX_LENGTH:
+        return first[: MESSAGE_MAX_LENGTH - 1].rstrip() + "…"
+    return first
