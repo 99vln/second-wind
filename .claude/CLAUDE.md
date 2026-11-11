@@ -4,7 +4,7 @@ Second Wind is a real-life game for people with ADHD: wins that already happen (
 
 ## Product rule that overrides everything
 
-**The app never punishes.** It may withhold a reward, but it never takes away XP, levels or progress. No day streaks, no counting missed days, no guilt in copy. A break is followed by a comeback bonus.
+**The app never punishes.** It may withhold a reward, but it never takes away XP, levels or progress. No day streaks. Progress is paced by a daily Energy bar: commits made with an empty bar go to a Reserve that is released on later days, and after a break of 3 or more days the bar is bigger (Second Wind, the comeback bonus). Unused Energy does not roll over, but XP, levels, Reserve and history are never taken away. No guilt in copy.
 
 ## Architecture
 
