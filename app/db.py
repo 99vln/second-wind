@@ -49,7 +49,9 @@ def _on_sqlite_connect(dbapi_connection: Any, _connection_record: Any) -> None:
 
 
 def _on_sqlite_begin(connection: Any) -> None:
-    connection.exec_driver_sql("BEGIN")
+    # IMMEDIATE takes the write lock up front, so concurrent writers wait their turn instead
+    # of failing with "database is locked" (the job the Postgres advisory lock does there).
+    connection.exec_driver_sql("BEGIN IMMEDIATE")
 
 
 @cache

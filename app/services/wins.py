@@ -86,48 +86,42 @@ def record_commit(
     if _event_exists(session, sha):
         return _DUPLICATE
 
-    try:
-        with session.begin_nested():
-            now = datetime.now(UTC)
-            event = Event(
-                source=SOURCE_GITHUB,
-                external_id=sha,
-                repo=repo,
-                author_username=author_username,
-                occurred_at=occurred_at,
-                received_at=now,
-                payload=payload,
-            )
-            session.add(event)
-            session.flush()  # raw fact first; the unique (source, external_id) is the real guard
-
-            grant = grant_for_commit(_day_state(session, day))
-            win = Win(
-                event_id=event.id,
-                kind=KIND_COMMIT,
-                local_day=day,
-                xp=grant.xp,
-                energy_spent=grant.energy_spent,
-                reserve_deposit=grant.reserve_deposit,
-                rule_version=RULE_VERSION,
-                earned_at=now,
-            )
-            session.add(win)
-            session.flush()
-
-            if grant.reserve_release > 0:
-                session.add(
-                    ReserveRelease(
-                        win_id=win.id, local_day=day, xp=grant.reserve_release, created_at=now
-                    )
-                )
-                session.flush()
-    except IntegrityError:
-        # The savepoint is already rolled back. If another writer stored this SHA between
-        # our check and our insert, that is a duplicate; any other violation is a real bug.
-        if _event_exists(session, sha):
+    # Outer savepoint: the event, win and release are stored together or not at all.
+    with session.begin_nested():
+        now = datetime.now(UTC)
+        event = Event(
+            source=SOURCE_GITHUB,
+            external_id=sha,
+            repo=repo,
+            author_username=author_username,
+            occurred_at=occurred_at,
+            received_at=now,
+            payload=payload,
+        )
+        if not _insert_event(session, event):  # raw fact first
             return _DUPLICATE
-        raise
+
+        grant = grant_for_commit(_day_state(session, day))
+        win = Win(
+            event_id=event.id,
+            kind=KIND_COMMIT,
+            local_day=day,
+            xp=grant.xp,
+            energy_spent=grant.energy_spent,
+            reserve_deposit=grant.reserve_deposit,
+            rule_version=RULE_VERSION,
+            earned_at=now,
+        )
+        session.add(win)
+        session.flush()
+
+        if grant.reserve_release > 0:
+            session.add(
+                ReserveRelease(
+                    win_id=win.id, local_day=day, xp=grant.reserve_release, created_at=now
+                )
+            )
+            session.flush()
 
     return RecordResult(
         created=True,
@@ -193,10 +187,28 @@ def _lock_ledger(session: Session) -> None:
 
     Without it, two webhook deliveries processed at once could both spend the day's last
     Energy, or both release the same Reserve XP and push the balance below zero.
-    SQLite (tests and local dev) allows a single writer anyway.
+    SQLite (tests and local dev) gets the same effect from BEGIN IMMEDIATE (see app/db.py).
     """
     if session.get_bind().dialect.name == "postgresql":
         session.execute(select(func.pg_advisory_xact_lock(LEDGER_LOCK_KEY)))
+
+
+def _insert_event(session: Session, event: Event) -> bool:
+    """Insert the event; False if another writer stored the same SHA first.
+
+    The unique (source, external_id) constraint is the real guard against duplicates. Only an
+    IntegrityError from this insert, with the SHA now present, counts as a duplicate; any
+    other error propagates.
+    """
+    try:
+        with session.begin_nested():
+            session.add(event)
+            session.flush()
+    except IntegrityError:
+        if _event_exists(session, event.external_id):
+            return False
+        raise
+    return True
 
 
 def _event_exists(session: Session, sha: str) -> bool:
